@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/rmstrendplot.tsx","./src/components/spectrumplot.tsx","./src/components/charts/_plot.tsx","./src/lib/api.ts","./src/lib/queries.ts","./src/pages/equipmentpage.tsx","./src/pages/summarypage.tsx","./src/types/plotly-js-dist-min.d.ts","./src/types/plotly.d.ts"],"version":"5.9.3"}

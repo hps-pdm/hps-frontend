@@ -1,0 +1,470 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import Plot from "react-plotly.js";
+import { useEquipmentSpectrum } from "../../lib/queries";
+
+type SpectrumData = {
+  freqs: number[];
+  amps: number[];
+};
+
+function useDirSpectrum(
+  sn: string,
+  dir: number,
+  maxN: number
+): {
+  data: SpectrumData | null;
+  loading: boolean;
+  error: boolean;
+} {
+  const { data, isLoading, error } = useEquipmentSpectrum(sn, dir, maxN);
+
+  const shaped = useMemo(() => {
+    if (!data || !Array.isArray(data.frequencies) || !Array.isArray(data.fft_vel)) {
+      return null;
+    }
+    return {
+      freqs: data.frequencies as number[],
+      amps: data.fft_vel as number[],
+    };
+  }, [data]);
+
+  return {
+    data: shaped,
+    loading: isLoading,
+    error: !!error,
+  };
+}
+
+export default function EquipmentSpectrum({ sn }: { sn: string }) {
+  const maxN = 4096;
+
+  // Load spectrum for each direction explicitly
+  const d1 = useDirSpectrum(sn, 1, maxN);
+  const d2 = useDirSpectrum(sn, 2, maxN);
+  const d3 = useDirSpectrum(sn, 3, maxN);
+
+  const anyLoading = d1.loading || d2.loading || d3.loading;
+  const anyData =
+    (d1.data && d1.data.freqs.length) ||
+    (d2.data && d2.data.freqs.length) ||
+    (d3.data && d3.data.freqs.length);
+  const allError = !anyLoading && !anyData;
+
+  if (anyLoading) {
+    return <div style={{ marginTop: 24 }}>Loading spectrum…</div>;
+  }
+
+  if (allError) {
+    return (
+      <div style={{ marginTop: 24, color: "#EF4444" }}>
+        Failed to load spectrum.
+      </div>
+    );
+  }
+
+  if (!anyData) {
+    return (
+      <div style={{ marginTop: 24, color: "#9CA3AF" }}>
+        No spectrum data available.
+      </div>
+    );
+  }
+
+  // -----------------------------
+  // Plotly traces (Velocity)
+  // -----------------------------
+  const traces: any[] = [];
+
+  if (d1.data) {
+    traces.push({
+      x: d1.data.freqs,
+      y: d1.data.amps,
+      type: "scatter",
+      mode: "lines",
+      name: "Vertical",
+      line: { color: "#22C55E", width: 1.3 },
+      hovertemplate: "Vertical<br>f = %{x:.2f} Hz<br>Vel = %{y:.3f} mm/s",
+    });
+  }
+
+  if (d2.data) {
+    traces.push({
+      x: d2.data.freqs,
+      y: d2.data.amps,
+      type: "scatter",
+      mode: "lines",
+      name: "Horizontal",
+      line: { color: "#FACC15", width: 1.2 },
+      hovertemplate: "Horizontal<br>f = %{x:.2f} Hz<br>Vel = %{y:.3f} mm/s",
+    });
+  }
+
+  if (d3.data) {
+    traces.push({
+      x: d3.data.freqs,
+      y: d3.data.amps,
+      type: "scatter",
+      mode: "lines",
+      name: "Axial",
+      line: { color: "#6366F1", width: 1.2 },
+      hovertemplate: "Axial<br>f = %{x:.2f} Hz<br>Vel = %{y:.3f} mm/s",
+    });
+  }
+
+  // Determine overall max frequency across all directions
+  const maxFreq = Math.max(
+    d1.data?.freqs[d1.data.freqs.length - 1] || 0,
+    d2.data?.freqs[d2.data.freqs.length - 1] || 0,
+    d3.data?.freqs[d3.data?.freqs.length - 1] || 0
+  );
+
+  const initMax = maxFreq > 0 ? Math.min(1000, maxFreq) : 1000;
+
+  // -----------------------------
+  // Draggable harmonics + sidebands
+  // -----------------------------
+
+  // You can later initialize from RPM/BPFO/BPFI, etc.
+  const [f0, setF0] = useState<number>(30); // fundamental (Hz)
+  const [carrier, setCarrier] = useState<number>(30); // carrier frequency (Hz)
+  const [sidebandDelta, setSidebandDelta] = useState<number>(30); // Δf (Hz)
+  const [layoutRevision, setLayoutRevision] = useState<number>(0);
+
+  const [showHarmonics, setShowHarmonics] = useState(true);
+  const [showSidebands, setShowSidebands] = useState(true);
+  const [showCarrier, setShowCarrier] = useState(true);
+  const [showLabels, setShowLabels] = useState(true);
+
+  const nHarmonics = 8;
+  const nSidebands = 3;
+
+  /**
+   * shapes and annotations are derived from f0, carrier, sidebandDelta
+   *
+   * Shape index mapping:
+   *   0 .. nHarmonics-1  -> harmonics (1x .. nHarmonics x), where index i => order = i+1
+   *   nHarmonics         -> carrier
+   *   > nHarmonics       -> sidebands (2 * nSidebands of them)
+   */
+  const { shapes, annotations } = useMemo(() => {
+    const s: any[] = [];
+    const a: any[] = [];
+
+    // ---------- HARMONICS (including fundamental) ----------
+    for (let i = 0; i < nHarmonics; i++) {
+      const order = i + 1; // 1x, 2x, ..., nHarmonics x
+      const x = order * f0;
+
+      const isFundamental = i === 0;
+      const visible = isFundamental || showHarmonics;
+
+      s.push({
+        type: "line",
+        xref: "x",
+        yref: "paper",
+        x0: x,
+        x1: x,
+        y0: 0,
+        y1: 1,
+        visible,
+        line: isFundamental
+          ? { color: "#f97316", width: 2 }
+          : { color: "#f97316", width: 1, dash: "dot" },
+      });
+
+      if (showLabels && visible) {
+        const labelColor = isFundamental ? "#F97316" : "#f97316";
+        const labelText = isFundamental
+          ? `f₀\n${x.toFixed(1)} Hz`
+          : `${order}x\n${x.toFixed(1)} Hz`;
+
+        a.push({
+          x,
+          y: 1.02,
+          xref: "x",
+          yref: "paper",
+          text: labelText,
+          showarrow: false,
+          font: { size: 12, color: labelColor },
+          textangle: -90,
+          xanchor: "center",
+          xshift: 10
+
+        });
+      }
+    }
+
+    // ---------- CARRIER ----------
+    const carrierIndex = nHarmonics;
+    s.push({
+      type: "line",
+      xref: "x",
+      yref: "paper",
+      x0: carrier,
+      x1: carrier,
+      y0: 0,
+      y1: 1,
+      visible: showCarrier,
+      line: { color: "#38BDF8", width: 2 },
+    });
+
+    if (showLabels && showCarrier) {
+      a.push({
+        x: carrier,
+        y: 1.06,
+        xref: "x",
+        yref: "paper",
+        text: `fᶜ\n${carrier.toFixed(1)} Hz`,
+        showarrow: false,
+        font: { size: 11, color: "#38BDF8" },
+        textangle: -90,
+        xanchor: "center",
+        xshift: 10
+
+      });
+    }
+
+    // ---------- SIDEBANDS ----------
+    for (let k = 1; k <= nSidebands; k++) {
+      const plus = carrier + k * sidebandDelta;
+      const minus = carrier - k * sidebandDelta;
+
+      // fᶜ + kΔf
+      s.push({
+        type: "line",
+        xref: "x",
+        yref: "paper",
+        x0: plus,
+        x1: plus,
+        y0: 0,
+        y1: 1,
+        visible: showSidebands,
+        line: { color: "#38bdf8", width: 1, dash: "dash" },
+      });
+
+      if (showLabels && showSidebands) {
+        a.push({
+          x: plus,
+          y: 1.03,
+          xref: "x",
+          yref: "paper",
+          text: `fᶜ+${k}Δf\n${plus.toFixed(1)} Hz`,
+          showarrow: false,
+          font: { size: 10, color: "#38BDF8" },
+          textangle: -90,
+          xanchor: "center",
+          xshift: 10
+        });
+      }
+
+      // fᶜ - kΔf
+      s.push({
+        type: "line",
+        xref: "x",
+        yref: "paper",
+        x0: minus,
+        x1: minus,
+        y0: 0,
+        y1: 1,
+        visible: showSidebands,
+        line: { color: "#38bdf8", width: 1, dash: "dash" },
+      });
+
+      if (showLabels && showSidebands) {
+        a.push({
+          x: minus,
+          y: 1.03,
+          xref: "x",
+          yref: "paper",
+          text: `fᶜ-${k}Δf\n${minus.toFixed(1)} Hz`,
+          showarrow: false,
+          font: { size: 10, color: "#38BDF8" },
+          textangle: -90,
+          xanchor: "center",
+          xshift: 10
+        });
+      }
+    }
+
+    return { shapes: s, annotations: a };
+  }, [
+    f0,
+    carrier,
+    sidebandDelta,
+    showCarrier,
+    showSidebands,
+    showHarmonics,
+    showLabels,
+    nHarmonics,
+    nSidebands,
+  ]);
+
+  const fundamentalIndex = 0;
+  const carrierIndex = nHarmonics; // matches shape build order
+
+  const handleRelayout = (ev: any) => {
+    let changed = false;
+
+    Object.entries(ev).forEach(([key, value]) => {
+      const match = key.match(/^shapes\[(\d+)\]\.x0$/);
+      if (!match) return;
+
+      const idx = Number(match[1]);
+      const x = value as number;
+
+      if (idx < nHarmonics) {
+        // Dragged a harmonic (including fundamental)
+        const order = idx + 1; // index 0 => 1x, 1 => 2x, etc.
+        const newF0 = x / order;
+        if (newF0 > 0) {
+          setF0(newF0);
+          changed = true;
+        }
+      } else if (idx === carrierIndex) {
+        // Dragged carrier
+        setCarrier(x);
+        changed = true;
+      } else if (idx > carrierIndex) {
+        // Dragged a sideband
+        const sbRaw = idx - (carrierIndex + 1); // 0,1,2,...,2*nSidebands-1
+        const k = Math.floor(sbRaw / 2) + 1; // 1,2,3,...
+        const newDelta = Math.abs(x - carrier) / k;
+        if (newDelta > 0) {
+          setSidebandDelta(newDelta);
+          changed = true;
+        }
+      }
+    });
+
+    if (changed) {
+      setLayoutRevision((r) => r + 1);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 32 }}>
+      {/* Header: live f0, fc, Δf */}
+      <div
+        style={{
+          marginBottom: 8,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
+        <div style={{ fontSize: 13, color: "#9CA3AF" }}>
+          f₀ = {f0.toFixed(2)} Hz | fᶜ = {carrier.toFixed(2)} Hz | Δf ={" "}
+          {sidebandDelta.toFixed(2)} Hz
+        </div>
+
+        {/* Toggles */}
+        <div style={{ display: "flex", gap: 12, fontSize: 12 }}>
+          <label>
+            <input
+              type="checkbox"
+              checked={showHarmonics}
+              onChange={(e) => setShowHarmonics(e.target.checked)}
+            />
+            &nbsp;Harmonics
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={showSidebands}
+              onChange={(e) => setShowSidebands(e.target.checked)}
+            />
+            &nbsp;Sidebands
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={showCarrier}
+              onChange={(e) => setShowCarrier(e.target.checked)}
+            />
+            &nbsp;Carrier
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={showLabels}
+              onChange={(e) => setShowLabels(e.target.checked)}
+            />
+            &nbsp;Labels
+          </label>
+        </div>
+      </div>
+
+      <div
+        style={{
+          flex: 2,
+          minWidth: 260,
+          padding: "12px 14px",
+          borderRadius: 8,
+          backgroundColor: "#020617",
+          border: "1px solid #1E293B",
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          color: "#E5E7EB",
+        }}
+      >
+        {/* Title */}
+        <div style={{ fontSize: 20, fontWeight: 600, color: "#F3F4F6" }}>
+          Velocity Spectrum (Draggable Harmonics & Sidebands)
+        </div>
+
+        <Plot
+          data={traces}
+          layout={{
+            autosize: true,
+            height: 350,
+            margin: { l: 55, r: 20, t: 32, b: 48 },
+            paper_bgcolor: "rgba(0,0,0,0)",
+            plot_bgcolor: "rgba(0,0,0,0)",
+            xaxis: {
+              title: "Frequency (Hz)",
+              color: "#9CA3AF",
+              gridcolor: "#1F2937",
+              zeroline: false,
+              range: [0, initMax],
+            },
+            yaxis: {
+              title: "Velocity (mm/s)",
+              color: "#9CA3AF",
+              gridcolor: "#1F2937",
+              zeroline: false,
+            },
+            legend: {
+              orientation: "v",
+              x: 0.9,
+              y: 0.8,
+              font: { size: 13, color: "#E5E7EB" },
+            },
+            hovermode: "closest",
+            shapes,
+            annotations,
+          }}
+          config={{
+            displaylogo: false,
+            responsive: true,
+            scrollZoom: true,
+            doubleClick: "reset",
+            modeBarButtonsToRemove: [
+              "lasso2d",
+              "select2d",
+              "toggleSpikelines",
+            ],
+            editable: true,
+            edits: { shapePosition: true }, // allow dragging shapes
+          }}
+          style={{ width: "100%", height: "100%" }}
+          onRelayout={handleRelayout}
+          layoutRevision={layoutRevision}
+        />
+      </div>
+    </div>
+  );
+}

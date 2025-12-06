@@ -22,8 +22,8 @@ jobs:
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           action: upload
-          app_location: "."        # change if frontend is in a subfolder
-          api_location: ""         # no API for SWA
+          app_location: "."        # root contains package.json
+          api_location: ""         # no API
           output_location: "dist"  # Vite build output
         env:
           VITE_API_BASE_URL: https://hps-backend-api-gedpdegeegefang4.southcentralus-01.azurewebsites.net
